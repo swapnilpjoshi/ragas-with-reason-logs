@@ -27,14 +27,53 @@ class StatementGeneratorInput(BaseModel):
     answer: str = Field(description="The answer to the question")
 
 
+# CIT: statements now carry a `type` so the NLI judge can branch on disclaimers
+# and citations. See docs/ragas-prompt-improvements-202604.md in macnica-autoeval.
+class TypedStatement(BaseModel):
+    text: str = Field(description="The statement, fully self-contained (no pronouns)")
+    type: t.Literal["factual_claim", "disclaimer", "citation"] = Field(
+        description=(
+            "factual_claim = substantive assertion; "
+            "disclaimer = explicit refusal/no-data/apology; "
+            "citation = source reference (filename/page/section/URL)"
+        )
+    )
+
+
 class StatementGeneratorOutput(BaseModel):
-    statements: t.List[str] = Field(description="The generated statements")
+    statements: t.List[TypedStatement] = Field(description="The generated statements")
 
 
 class StatementGeneratorPrompt(
     PydanticPrompt[StatementGeneratorInput, StatementGeneratorOutput]
 ):
-    instruction = "Given a question and an answer, analyze the complexity of each sentence in the answer. Break down each sentence into one or more fully understandable statements. Ensure that no pronouns are used in any statement. Format the outputs in JSON."
+    instruction = (
+        "Given a question and an answer, analyze each sentence in the answer. "
+        "Break down each sentence into one or more fully self-contained statements "
+        "(no pronouns; each statement understandable on its own).\n\n"
+        "For each statement, ALSO classify its `type` as exactly one of:\n"
+        "- `factual_claim` — the statement asserts a specific fact, number, "
+        "procedure, recommendation, technical value, or instruction. Default "
+        "type when nothing else fits.\n"
+        "- `disclaimer` — the statement explicitly declines to answer, apologizes, "
+        "or states that the information is absent, unknown, or outside scope. "
+        "Disclaimer language (non-exhaustive, cross-language):\n"
+        "  Japanese: 申し訳ございません / 申し訳ありません / データにありません / "
+        "情報がありません / お答えできません / 見つかりませんでした / "
+        "具体的なデータはございません / 恐れ入りますが / わかりません\n"
+        "  English: \"I don't have information on X\", \"no data available\", "
+        "\"I cannot find\", \"not in the provided context\", "
+        "\"sorry, I'm unable to answer\".\n"
+        "- `citation` — the statement is (or primarily contains) a source reference: "
+        "a PDF/document filename, page number, section reference, or URL. "
+        "Examples: \"詳細は r01ds0282ej0260-rl78g11.pdf の 105 ページを参照してください。\", "
+        "\"See datasheet ug-813968-813969.pdf page 6.\", "
+        "\"参照: RL78/G12 データシート, section 4.2\".\n\n"
+        "If a single sentence mixes types (e.g. \"I don't have the exact value for X, "
+        "but see foo.pdf page 3\"), split it into multiple statements of appropriate "
+        "type.\n\n"
+        "Format the output as JSON with the schema provided."
+    )
     input_model = StatementGeneratorInput
     output_model = StatementGeneratorOutput
     examples = [
@@ -45,13 +84,25 @@ class StatementGeneratorPrompt(
             ),
             StatementGeneratorOutput(
                 statements=[
-                    "Albert Einstein was a German-born theoretical physicist.",
-                    "Albert Einstein is recognized as one of the greatest and most influential physicists of all time.",
-                    "Albert Einstein was best known for developing the theory of relativity.",
-                    "Albert Einstein also made important contributions to the development of the theory of quantum mechanics.",
+                    TypedStatement(text="Albert Einstein was a German-born theoretical physicist.", type="factual_claim"),
+                    TypedStatement(text="Albert Einstein is recognized as one of the greatest and most influential physicists of all time.", type="factual_claim"),
+                    TypedStatement(text="Albert Einstein was best known for developing the theory of relativity.", type="factual_claim"),
+                    TypedStatement(text="Albert Einstein also made important contributions to the development of the theory of quantum mechanics.", type="factual_claim"),
                 ]
             ),
-        )
+        ),
+        (
+            StatementGeneratorInput(
+                question="RL78/G11のタイマ出力の最小パルス幅は？",
+                answer="申し訳ございません、RL78/G11の最小パルス幅に関する情報は提供されたデータにはありません。詳細は r01ds0282ej0260-rl78g11.pdf の 105 ページを参照してください。",
+            ),
+            StatementGeneratorOutput(
+                statements=[
+                    TypedStatement(text="RL78/G11の最小パルス幅に関する情報は提供されたデータにありません。", type="disclaimer"),
+                    TypedStatement(text="詳細は r01ds0282ej0260-rl78g11.pdf の 105 ページを参照してください。", type="citation"),
+                ]
+            ),
+        ),
     ]
 
 
@@ -67,11 +118,48 @@ class NLIStatementOutput(BaseModel):
 
 class NLIStatementInput(BaseModel):
     context: str = Field(..., description="The context of the question")
-    statements: t.List[str] = Field(..., description="The statements to judge")
+    statements: t.List[TypedStatement] = Field(
+        ...,
+        description="The statements to judge (each with text + type)",
+    )
 
 
 class NLIStatementPrompt(PydanticPrompt[NLIStatementInput, NLIStatementOutput]):
-    instruction = "Your task is to judge the faithfulness of a series of statements based on a given context. For each statement you must return verdict as 1 if the statement can be directly inferred based on the context or 0 if the statement can not be directly inferred based on the context."
+    instruction = (
+        "Your task is to judge the faithfulness of a series of statements against "
+        "a given context. Each statement has a `type` — one of `factual_claim`, "
+        "`disclaimer`, or `citation`.\n\n"
+        "Each context may begin with a source header of the form "
+        "`[Source: <filename>, page <N>]`. Treat this header as structured "
+        "metadata about the chunk, not as chunk body text.\n\n"
+        "For each statement, return verdict = 1 (faithful) or verdict = 0 "
+        "(unfaithful) using the rule for its type:\n\n"
+        "(a) `factual_claim` — return 1 if the claim can be directly inferred from "
+        "the context body (ignore the `[Source: ...]` header for this rule); "
+        "otherwise return 0. (Original RAGAS rule, unchanged.)\n\n"
+        "(b) `disclaimer` — the statement asserts that specific data is absent or "
+        "that an answer cannot be given. Apply the negative-evidence rule:\n"
+        "  - Return 1 (faithful) if the context does NOT contain the data the "
+        "disclaimer claims is absent. A correct refusal is not a hallucination — "
+        "it is an accurate statement about the absence of knowledge in the "
+        "retrieved material.\n"
+        "  - Return 0 only if the context clearly DOES contain the data the answer "
+        "claims is missing (the bot refused when it shouldn't have).\n\n"
+        "(c) `citation` — the statement references a source (filename/page/section). "
+        "Apply the source-match rule:\n"
+        "  - Return 1 (faithful) if any retrieved context's `[Source: ...]` header "
+        "matches the cited filename AND (if the citation names a page) the cited "
+        "page number. The match establishes that the cited source was actually "
+        "retrieved; the chunk body is not required to literally repeat the cited "
+        "fact.\n"
+        "  - Return 0 if no retrieved context's source header matches the citation.\n"
+        "  - If no context carries a `[Source: ...]` header at all, fall back to "
+        "rule (a): treat the citation as a factual_claim.\n\n"
+        "In the `reason` field, cite which of rule (a), (b), or (c) was applied; "
+        "for rule (b) state whether the context did or did not contain the "
+        "claimed-absent data; for rule (c) state which context's source header "
+        "matched."
+    )
     input_model = NLIStatementInput
     output_model = NLIStatementOutput
     examples = [
@@ -79,10 +167,10 @@ class NLIStatementPrompt(PydanticPrompt[NLIStatementInput, NLIStatementOutput]):
             NLIStatementInput(
                 context="""John is a student at XYZ University. He is pursuing a degree in Computer Science. He is enrolled in several courses this semester, including Data Structures, Algorithms, and Database Management. John is a diligent student and spends a significant amount of time studying and completing assignments. He often stays late in the library to work on his projects.""",
                 statements=[
-                    "John is majoring in Biology.",
-                    "John is taking a course on Artificial Intelligence.",
-                    "John is a dedicated student.",
-                    "John has a part-time job.",
+                    TypedStatement(text="John is majoring in Biology.", type="factual_claim"),
+                    TypedStatement(text="John is taking a course on Artificial Intelligence.", type="factual_claim"),
+                    TypedStatement(text="John is a dedicated student.", type="factual_claim"),
+                    TypedStatement(text="John has a part-time job.", type="factual_claim"),
                 ],
             ),
             NLIStatementOutput(
@@ -114,16 +202,49 @@ class NLIStatementPrompt(PydanticPrompt[NLIStatementInput, NLIStatementOutput]):
             NLIStatementInput(
                 context="Photosynthesis is a process used by plants, algae, and certain bacteria to convert light energy into chemical energy.",
                 statements=[
-                    "Albert Einstein was a genius.",
+                    TypedStatement(text="Albert Einstein was a genius.", type="factual_claim"),
                 ],
             ),
             NLIStatementOutput(
                 statements=[
                     StatementFaithfulnessAnswer(
                         statement="Albert Einstein was a genius.",
-                        reason="The context and statement are unrelated",
+                        reason="Rule (a): factual_claim. The context and statement are unrelated.",
                         verdict=0,
                     )
+                ]
+            ),
+        ),
+        (
+            NLIStatementInput(
+                context=(
+                    "[Source: r01ds0282ej0260-rl78g11.pdf, page 105]\n"
+                    "RL78/G11 Timer output specifications. See the datasheet for "
+                    "timer array unit output pulse width parameters."
+                ),
+                statements=[
+                    TypedStatement(
+                        text="RL78/G11の最小パルス幅に関する情報は提供されたデータにありません。",
+                        type="disclaimer",
+                    ),
+                    TypedStatement(
+                        text="詳細は r01ds0282ej0260-rl78g11.pdf の 105 ページを参照してください。",
+                        type="citation",
+                    ),
+                ],
+            ),
+            NLIStatementOutput(
+                statements=[
+                    StatementFaithfulnessAnswer(
+                        statement="RL78/G11の最小パルス幅に関する情報は提供されたデータにありません。",
+                        reason="Rule (b): disclaimer. The context references timer output specs generally but does NOT contain the specific minimum pulse width value the disclaimer claims is absent. Correct refusal, faithful.",
+                        verdict=1,
+                    ),
+                    StatementFaithfulnessAnswer(
+                        statement="詳細は r01ds0282ej0260-rl78g11.pdf の 105 ページを参照してください。",
+                        reason="Rule (c): citation. The context carries [Source: r01ds0282ej0260-rl78g11.pdf, page 105] which matches the cited filename and page. Faithful.",
+                        verdict=1,
+                    ),
                 ]
             ),
         ),
@@ -150,7 +271,10 @@ class Faithfulness(MetricWithLLM, SingleTurnMetric):
     max_retries: int = 1
 
     async def _create_verdicts(
-        self, row: t.Dict, statements: t.List[str], callbacks: Callbacks
+        self,
+        row: t.Dict,
+        statements: t.List[TypedStatement],
+        callbacks: Callbacks,
     ) -> NLIStatementOutput:
         assert self.llm is not None, "llm must be set to compute score"
 
@@ -234,13 +358,17 @@ class FaithfulnesswithHHEM(Faithfulness):
         super().__post_init__()
 
     def _create_pairs(
-        self, row: t.Dict, statements: t.List[str]
+        self, row: t.Dict, statements: t.List[t.Union[str, TypedStatement]]
     ) -> t.List[t.Tuple[str, str]]:
         """
-        create pairs of (question, answer) from the row
+        create pairs of (premise, statement_text) from the row.
+        Accepts either List[str] (legacy) or List[TypedStatement] (CIT).
         """
         premise = "\n".join(row["retrieved_contexts"])
-        pairs = [(premise, statement) for statement in statements]
+        pairs = [
+            (premise, s.text if isinstance(s, TypedStatement) else s)
+            for s in statements
+        ]
         return pairs
 
     def _create_batch(
