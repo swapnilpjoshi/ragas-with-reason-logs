@@ -39,7 +39,29 @@ class Verification(BaseModel):
 
 class ContextPrecisionPrompt(PydanticPrompt[QAC, Verification]):
     name: str = "context_precision"
-    instruction: str = 'Given question, answer and context verify if the context was useful in arriving at the given answer. Give verdict as "1" if useful and "0" if not with json output.'
+    # CIT: source-match shortcut for cited answers.
+    # See docs/ragas-prompt-improvements-202604.md in macnica-autoeval.
+    instruction: str = (
+        "Given a question, an answer, and a context, verify whether the context "
+        "was useful in arriving at the answer. Return `verdict` = 1 (useful) or "
+        "`verdict` = 0 (not useful) as JSON with a `reason`.\n\n"
+        "The context may begin with a source header of the form "
+        "`[Source: <filename>, page <N>]`. Treat this header as structured "
+        "metadata.\n\n"
+        "Apply these rules in order:\n\n"
+        "1. Source-match shortcut. If the answer cites a specific source "
+        "(filename and/or page number — look for patterns like `<name>.pdf`, "
+        "`page N`, `Nページ`, `section X.Y`) AND this context's `[Source: ...]` "
+        "header matches that citation, return `verdict` = 1. Rationale: in a "
+        "document-retrieval UI the user sees the cited source document itself; "
+        "the context being present is evidence that the correct source was "
+        "retrieved, which makes it useful regardless of whether the chunk body "
+        "alone could answer the question.\n\n"
+        "2. Body-usefulness rule. Otherwise, return 1 if the context body "
+        "contains information that contributes to the answer, 0 if not. "
+        "(Original RAGAS rule.)\n\n"
+        "In the `reason` field, say which rule fired."
+    )
     input_model = QAC
     output_model = Verification
     examples = [
