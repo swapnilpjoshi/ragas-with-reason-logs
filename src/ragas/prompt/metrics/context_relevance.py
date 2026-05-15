@@ -27,6 +27,10 @@ Follow the instructions below:
 0. If the context does not contains any relevant information to answer the question, say 0.
 1. If the context partially contains relevant information to answer the question, say 1.
 2. If the context contains any relevant information to answer the question, say 2.
+3. Do not penalize citation formatting differences (filename/page notation) when the context content is relevant.
+4. If the question is underspecified and the context has enough information to justify a clarification request, do not force rating 0.
+   In such cases, use 1 when context is partially relevant to the likely intent.
+5. If context clearly lacks requested facts, this is a retrieval/coverage issue; score by actual relevance only, not by assumed external knowledge.
 You must provide the relevance score of 0, 1, or 2, nothing else.
 Do not explain.
 Return your response as JSON in this format: {{"rating": X}} where X is 0, 1, or 2.
@@ -59,6 +63,9 @@ Here are the instructions I will follow:
 * If the Context does not contain any relevant information to answer the Question, I will respond with a relevance score of 0.
 * If the Context partially contains relevant information to answer the Question, I will respond with a relevance score of 1.
 * If the Context contains any relevant information to answer the Question, I will respond with a relevance score of 2.
+* Citation format mismatch alone (such as filename/page style) does not reduce relevance.
+* For abrupt or underspecified questions, if Context can support a clarification-oriented response, use 1 rather than 0.
+* If requested facts are missing in Context, treat this as retrieval/coverage limitation and score strictly by available relevance.
 Return your response as JSON in this format: {{"rating": X}} where X is 0, 1, or 2.
 
 ### Question: {safe_query}
