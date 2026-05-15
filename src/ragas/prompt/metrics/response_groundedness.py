@@ -22,6 +22,10 @@ A. If there is no context or no assertion or context is empty or assertion is em
 B. If the assertion is not supported by the context, say 0.
 C. If the assertion is partially supported by the context, say 1.
 D. If the assertion is fully supported by the context, say 2.
+E. Citation format differences alone are not contradiction.
+   Treat filename/page notation variants as equivalent references when factual support exists.
+F. If the response explicitly states that requested data is not present in the provided context/files,
+   and does not add unsupported factual claims, treat it as grounded (score 2).
 You must provide a rating of 0, 1, or 2, nothing else.
 
 ### Context:
@@ -49,6 +53,9 @@ def response_groundedness_judge2_prompt(response: str, context: str) -> str:
 * If the assertion is not supported or context is empty or assertion is empty, assign a score of 0.
 * If the assertion is partially supported, assign a score of 1.
 * If the assertion is fully supported, assign a score of 2.
+* Citation format mismatch alone is not grounds for score 0.
+  (e.g., different filename/page notation styles can still refer to the same evidence.)
+* If response says information is unavailable in provided context and avoids unsupported additions, score as grounded (2).
 
 I will provide a rating of 0, 1, or 2, without any additional information.
 
