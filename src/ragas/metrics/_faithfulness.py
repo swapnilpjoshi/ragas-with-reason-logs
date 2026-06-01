@@ -367,8 +367,12 @@ class Faithfulness(MetricWithLLM, SingleTurnMetric):
             logger.warning(f"[FAITHFULNESS CALCULATION] Generated statements count: {len(statements)}")
             if statements:
                 for i, stmt in enumerate(statements):
-                    stmt_preview = stmt[:100] if stmt else ""
-                    logger.warning(f"[FAITHFULNESS CALCULATION] Statement {i+1} (first 100 chars): {stmt_preview}")
+                    # CIT: statements are now TypedStatement (text+type), not plain
+                    # strings. Read .text for logging; tolerate legacy str too.
+                    stmt_text = stmt.text if isinstance(stmt, TypedStatement) else stmt
+                    stmt_preview = stmt_text[:100] if stmt_text else ""
+                    stmt_type = getattr(stmt, "type", "n/a")
+                    logger.warning(f"[FAITHFULNESS CALCULATION] Statement {i+1} (type={stmt_type}, first 100 chars): {stmt_preview}")
             
             logger.warning(f"[FAITHFULNESS CALCULATION] Verdicts count: {len(verdicts.statements)}")
             for i, verdict in enumerate(verdicts.statements):
