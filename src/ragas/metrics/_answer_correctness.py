@@ -13,6 +13,7 @@ from ragas.metrics._faithfulness import (
     StatementGeneratorInput,
     StatementGeneratorOutput,
     StatementGeneratorPrompt,
+    TypedStatement,
 )
 from ragas.metrics.base import (
     MetricOutputType,
@@ -29,6 +30,18 @@ if t.TYPE_CHECKING:
     from langchain_core.callbacks import Callbacks
 
 logger = logging.getLogger(__name__)
+
+
+def statement_texts(statements: t.Sequence[t.Any]) -> list[str]:
+    """Plain text of each statement.
+
+    Statements are ``TypedStatement`` (text + type) on this fork; older callers may
+    still pass plain strings, which are returned unchanged.
+    """
+    return [
+        statement.text if isinstance(statement, TypedStatement) else statement
+        for statement in statements
+    ]
 
 
 class QuestionAnswerGroundTruth(BaseModel):
@@ -234,8 +247,8 @@ class AnswerCorrectness(MetricWithLLM, MetricWithEmbeddings, SingleTurnMetric):
             statements[item] = statements_x
 
         if not all([val == [] for val in statements.values()]):
-            ground_truth = [statement for statement in statements["reference"]]
-            answer = [statement for statement in statements["response"]]
+            ground_truth = statement_texts(statements["reference"])
+            answer = statement_texts(statements["response"])
             answers = await self.correctness_prompt.generate(
                 llm=self.llm,
                 data=QuestionAnswerGroundTruth(

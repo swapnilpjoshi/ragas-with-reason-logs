@@ -1,5 +1,6 @@
 import copy
 import typing as t
+from enum import Enum
 
 from pydantic import BaseModel
 
@@ -7,14 +8,24 @@ from pydantic import BaseModel
 def get_all_strings(obj: t.Any) -> list[str]:
     """
     Get all strings in the objects.
+
+    Fields typed as ``Literal`` or ``Enum`` are skipped so closed-vocabulary
+    discriminators (e.g. ``TypedStatement.type`` = factual_claim/disclaimer/
+    citation) are not sent for translation during prompt adaptation and then
+    silently overwritten with schema-invalid values.
     """
     strings = []
 
     if isinstance(obj, str):
         strings.append(obj)
     elif isinstance(obj, BaseModel):
-        for field_value in obj.model_dump().values():
-            strings.extend(get_all_strings(field_value))
+        for field_name, field_info in type(obj).model_fields.items():
+            annotation = field_info.annotation
+            if t.get_origin(annotation) is t.Literal:
+                continue
+            if isinstance(annotation, type) and issubclass(annotation, Enum):
+                continue
+            strings.extend(get_all_strings(getattr(obj, field_name)))
     elif isinstance(obj, (list, tuple)):
         for item in obj:
             strings.extend(get_all_strings(item))
